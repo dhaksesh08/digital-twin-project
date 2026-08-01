@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Digital Twin Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.3/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #151b23;
+    --border: #2a323c;
+    --text: #e6edf3;
+    --muted: #8b96a3;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --crit: #f85149;
+    --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    margin: 0 0 4px;
+  }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 20px;
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  .dot.normal { background: var(--ok); }
+  .dot.warning { background: var(--warn); }
+  .dot.critical { background: var(--crit); box-shadow: 0 0 8px var(--crit); }
+  #status-text { font-weight: 600; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; }
+  #status-reason { color: var(--muted); font-size: 13px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .card .values { display: flex; align-items: baseline; gap: 10px; margin-top: 6px; }
+  .card .real { font-size: 26px; font-weight: 700; }
+  .card .twin { font-size: 14px; color: var(--accent); }
+
+  .chart-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    height: 320px;
+  }
+</style>
+</head>
+<body>
+
+  <h1>Digital Twin — Live Monitor</h1>
+  <div class="sub">device: <span id="device-id">—</span> · last update: <span id="last-update">—</span></div>
+
+  <div class="status-bar">
+    <div class="dot" id="status-dot"></div>
+    <div id="status-text">Waiting for data...</div>
+    <div id="status-reason"></div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">Temperature (°C)</div>
+      <div class="values"><span class="real" id="temp-real">—</span><span class="twin" id="temp-twin">twin: —</span></div>
+    </div>
+    <div class="card">
+      <div class="label">Vibration</div>
+      <div class="values"><span class="real" id="vib-real">—</span><span class="twin" id="vib-twin">twin: —</span></div>
+    </div>
+    <div class="card">
+      <div class="label">Speed (RPM)</div>
+      <div class="values"><span class="real" id="speed-real">—</span><span class="twin" id="speed-twin">twin: —</span></div>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <canvas id="chart"></canvas>
+  </div>
+
+<script>
+  const BACKEND_URL = "http://localhost:8000";
+  const POLL_MS = 2000;
+  const MAX_POINTS = 30;
+
+  const ctx = document.getElementById("chart").getContext("2d");
+  const chart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: [
+        { label: "Temperature (real)", data: [], borderColor: "#f85149", tension: 0.3, pointRadius: 0 },
+        { label: "Temperature (twin)", data: [], borderColor: "#58a6ff", borderDash: [4,4], tension: 0.3, pointRadius: 0 },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      scales: {
+        x: { ticks: { color: "#8b96a3" }, grid: { color: "#2a323c" } },
+        y: { ticks: { color: "#8b96a3" }, grid: { color: "#2a323c" } },
+      },
+      plugins: { legend: { labels: { color: "#e6edf3" } } }
+    }
+  });
+
+  function setStatus(status, reason) {
+    const dot = document.getElementById("status-dot");
+    const text = document.getElementById("status-text");
+    dot.className = "dot " + (status || "");
+    text.textContent = status ? status.toUpperCase() : "NO DATA";
+    document.getElementById("status-reason").textContent = reason || "";
+  }
+
+  async function poll() {
+    try {
+      const [realRes, twinRes] = await Promise.all([
+        fetch(`${BACKEND_URL}/data/latest`),
+        fetch(`${BACKEND_URL}/twin/status/latest`),
+      ]);
+      const real = await realRes.json();
+      const twin = await twinRes.json();
+
+      if (real) {
+        document.getElementById("device-id").textContent = real.device_id;
+        document.getElementById("last-update").textContent = new Date(real.timestamp).toLocaleTimeString();
+        document.getElementById("temp-real").textContent = real.temperature;
+        document.getElementById("vib-real").textContent = real.vibration;
+        document.getElementById("speed-real").textContent = real.speed;
+
+        const label = new Date(real.timestamp).toLocaleTimeString();
+        chart.data.labels.push(label);
+        chart.data.datasets[0].data.push(real.temperature);
+        if (chart.data.labels.length > MAX_POINTS) {
+          chart.data.labels.shift();
+          chart.data.datasets[0].data.shift();
+          chart.data.datasets[1].data.shift();
+        }
+      }
+
+      if (twin) {
+        document.getElementById("temp-twin").textContent = `twin: ${twin.predicted_temperature}`;
+        document.getElementById("vib-twin").textContent = `twin: ${twin.predicted_vibration}`;
+        document.getElementById("speed-twin").textContent = `twin: ${twin.predicted_speed}`;
+        chart.data.datasets[1].data.push(twin.predicted_temperature);
+        setStatus(twin.status, twin.anomaly_reason);
+      }
+
+      chart.update();
+    } catch (err) {
+      setStatus(null, "Backend unreachable — is it running on port 8000?");
+      console.error(err);
+    }
+  }
+
+  poll();
+  setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>
